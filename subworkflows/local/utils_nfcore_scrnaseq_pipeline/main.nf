@@ -230,10 +230,63 @@ workflow PIPELINE_COMPLETION {
 //
 def validateInputParameters() {
     genomeExistsError()
+    validateToolParameters()
 
     // Validate cellranger_multi_barcodes if provided and aligner is cellrangermulti
     if (params.aligner == 'cellrangermulti' && params.cellranger_multi_barcodes) {
         validateCellrangerMultiBarcodes()
+    }
+}
+
+//
+// Reject options that the selected aligner cannot use. Ignore inactive defaults and
+// references inherited from the genomes map, which can contain indices for several tools.
+//
+def validateToolParameters() {
+    def tool_options = [
+        simpleaf: [transcript_fasta: null, simpleaf_index: null, simpleaf_umi_resolution: 'cr-like',
+                   remove_doublets: false, qcatch_n_partitions: null],
+        star: [star_index: null, star_ignore_sjdbgtf: null],
+        kallisto: [kallisto_index: null, kb_workflow: 'standard', kb_t1c: null, kb_t2c: null],
+        cellrangerarc: [motifs: null, cellrangerarc_config: null, cellrangerarc_reference: null],
+        cellrangermulti: [cellranger_vdj_index: null, skip_cellrangermulti_vdjref: false,
+                         gex_frna_probe_set: null, gex_target_panel: null, gex_cmo_set: null,
+                         fb_reference: null, vdj_inner_enrichment_primers: null,
+                         gex_barcode_sample_assignment: null, cellranger_multi_barcodes: null,
+                         gex_reference_version: null]
+    ]
+    def genome_attributes = [star_index: 'star', simpleaf_index: 'simpleaf', kallisto_index: 'kallisto',
+                             cellranger_index: 'cellranger', cellranger_vdj_index: 'cellranger_vdj',
+                             transcript_fasta: 'transcript_fasta', txp2gene: 'txp2gene', motifs: 'motifs']
+    def errors = []
+    tool_options.each { aligner, options ->
+        if (params.aligner != aligner) {
+            options.each { option, default_value ->
+                def value = params.get(option)
+                def inherited = genome_attributes.containsKey(option) && value == getGenomeAttribute(genome_attributes[option])
+                if (value != null && value != false && value != default_value && !inherited) {
+                    errors << "--${option} is only supported with --aligner ${aligner}."
+                }
+            }
+        }
+    }
+    [cellranger_index: ['cellranger', 'cellrangerarc', 'cellrangermulti'],
+     txp2gene: ['simpleaf', 'kallisto'], barcode_whitelist: ['simpleaf', 'star'],
+     skip_cellranger_renaming: ['cellrangermulti']].each { option, aligners ->
+        def value = params.get(option)
+        def inherited = genome_attributes.containsKey(option) && value == getGenomeAttribute(genome_attributes[option])
+        if (value && !(params.aligner in aligners) && !inherited) {
+            errors << "--${option} is only supported with --aligner ${aligners.join(' or ')}."
+        }
+    }
+    if (params.aligner == 'simpleaf' && params.skip_qcatch && (params.remove_doublets || params.qcatch_n_partitions)) {
+        errors << '--remove_doublets and --qcatch_n_partitions require QCatch; remove --skip_qcatch.'
+    }
+    if (params.aligner == 'simpleaf' && params.transcript_fasta && params.simpleaf_index) {
+        errors << '--transcript_fasta has no effect when --simpleaf_index is supplied.'
+    }
+    if (errors) {
+        error("Invalid parameter combinations:\n  " + errors.join('\n  '))
     }
 }
 
